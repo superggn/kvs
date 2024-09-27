@@ -1,8 +1,12 @@
 use clap::{App, Arg, SubCommand};
+use kvs::{KvStore, KvsError, Result};
+use std::env::current_dir;
 use std::process::exit;
 
-fn main() {
+// 用 clap 解析了一下
+fn main() -> Result<()> {
     // 前几行这个 env! 都是为了初始化这个 App
+    // 用 clap 把环境变量搞出来
     let matches = App::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
         .author(env!("CARGO_PKG_AUTHORS"))
@@ -28,19 +32,36 @@ fn main() {
                 .arg(Arg::with_name("KEY").help("A string key").required(true)),
         )
         .get_matches();
+
     match matches.subcommand() {
-        ("set", Some(_matches)) => {
-            eprintln!("unimplemented");
-            exit(1);
+        ("set", Some(matches)) => {
+            let key = matches.value_of("KEY").unwrap();
+            let value = matches.value_of("VALUE").unwrap();
+            let mut store = KvStore::open(current_dir()?)?;
+            store.set(key.to_string(), value.to_string())?;
         }
-        ("get", Some(_matches)) => {
-            eprintln!("unimplemented");
-            exit(1);
+        ("get", Some(matches)) => {
+            let key = matches.value_of("KEY").unwrap();
+            let mut store = KvStore::open(current_dir()?)?;
+            if let Some(value) = store.get(key.to_string())? {
+                println!("{}", value);
+            } else {
+                println!("Key not found");
+            }
         }
-        ("rm", Some(_matches)) => {
-            eprintln!("unimplemented");
-            exit(1);
+        ("rm", Some(matches)) => {
+            let key = matches.value_of("KEY").unwrap();
+            let mut store = KvStore::open(current_dir()?)?;
+            match store.remove(key.to_string()) {
+                Ok(()) => {}
+                Err(KvsError::KeyNotFound) => {
+                    println!("Key not found");
+                    exit(1);
+                }
+                Err(e) => return Err(e),
+            }
         }
         _ => unreachable!(),
-    };
+    }
+    Ok(())
 }
