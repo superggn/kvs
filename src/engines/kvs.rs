@@ -10,6 +10,8 @@ use serde_json::Deserializer;
 use crate::{KvsError, Result};
 use std::ffi::OsStr;
 
+use super::KvsEngine;
+
 const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 
 /// The `KvStore` stores string key/value pairs.
@@ -113,6 +115,7 @@ impl<W: Write + Seek> Write for BufWriterWithPos<W> {
 }
 
 impl KvStore {
+    /// init an instance by opening a new path
     pub fn open(path: impl Into<PathBuf>) -> Result<KvStore> {
         let path: PathBuf = path.into();
         fs::create_dir_all(&path).unwrap();
@@ -137,6 +140,7 @@ impl KvStore {
         })
     }
 
+    /// set a kv pair
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
         // todo 加 return type
         let cmd = Command::set(key, value);
@@ -157,8 +161,8 @@ impl KvStore {
         Ok(())
     }
 
-    // result 是给 file 中的字符串格式的， 识别不了的字符串标一下 Err
-    // Option 是给 value 的， 存过这个 key 就是 Some, 没存过这个 key 那就是 None
+    /// result 是给 file 中的字符串格式的， 识别不了的字符串标一下 Err
+    /// Option 是给 value 的， 存过这个 key 就是 Some, 没存过这个 key 那就是 None
     pub fn get(&mut self, key: String) -> Result<Option<String>> {
         if let Some(cmd_pos) = self.key_2_cmd_pos.get(&key) {
             let reader = self
@@ -177,6 +181,7 @@ impl KvStore {
         }
     }
 
+    /// remove a key from storage
     pub fn remove(&mut self, key: String) -> Result<()> {
         if self.key_2_cmd_pos.contains_key(&key) {
             let cmd = Command::remove(key);
@@ -193,6 +198,7 @@ impl KvStore {
         }
     }
 
+    /// compact the storage files into a single compaction file
     pub fn compact(&mut self) -> Result<()> {
         let compaction_gen = self.cur_gen + 1;
         let mut compaction_writer = self.new_log_file(compaction_gen)?;
@@ -229,6 +235,59 @@ impl KvStore {
 
     fn new_log_file(&mut self, gen: u64) -> Result<BufWriterWithPos<File>> {
         new_log_file(&self.path, gen, &mut self.gen_2_reader)
+    }
+}
+
+impl KvsEngine for KvStore {
+    fn set(&mut self, key: String, value: String) -> Result<()> {
+        let cmd = Command::set(key, value);
+        let pos = self.writer.pos;
+        serde_json::to_writer(&mut self.writer, &cmd)?;
+        self.writer.flush()?;
+        if let Command::Set { key, .. } = cmd {
+            if let Some(old_cmd) = self
+                .key_2_cmd_pos
+                .insert(key, (self.cur_gen, pos..self.writer.pos).into())
+            {
+                self.uncompacted += old_cmd.len;
+            }
+        }
+        if self.uncompacted > COMPACTION_THRESHOLD {
+            self.compact()?;
+        }
+        Ok(())
+    }
+    fn get(&mut self, key: String) -> Result<Option<String>> {
+        if let Some(cmd_pos) = self.key_2_cmd_pos.get(&key) {
+            let reader = self
+                .gen_2_reader
+                .get_mut(&cmd_pos.gen)
+                .expect("Cannot find log reader");
+            reader.seek(SeekFrom::Start(cmd_pos.pos))?;
+            let cmd_reader = reader.take(cmd_pos.len);
+            if let Command::Set { value, .. } = serde_json::from_reader(cmd_reader)? {
+                Ok(Some(value))
+            } else {
+                Err(KvsError::UnexpectedCommandType)
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn remove(&mut self, key: String) -> Result<()> {
+        if self.key_2_cmd_pos.contains_key(&key) {
+            let cmd = Command::remove(key);
+            serde_json::to_writer(&mut self.writer, &cmd)?;
+            self.writer.flush()?;
+            if let Command::Remove { key } = cmd {
+                let old_cmd = self.key_2_cmd_pos.remove(&key).expect("key not found");
+                self.uncompacted += old_cmd.len;
+            }
+            Ok(())
+        } else {
+            Err(KvsError::KeyNotFound)
+        }
     }
 }
 
