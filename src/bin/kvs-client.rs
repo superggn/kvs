@@ -1,70 +1,65 @@
-use clap::AppSettings;
+use clap::{Parser, Subcommand};
 use kvs::{KvsClient, Result};
 use std::net::SocketAddr;
 use std::process::exit;
-use structopt::StructOpt;
 
 const DEFAULT_LISTENING_ADDRESS: &str = "127.0.0.1:4000";
 const ADDRESS_FORMAT: &str = "IP:PORT";
 
-#[derive(StructOpt, Debug)]
-#[structopt(
-    name = "kvs-client",
-    raw(global_settings = "&[\
-                           AppSettings::DisableHelpSubcommand,\
-                           AppSettings::VersionlessSubcommands]")
-)]
+#[derive(Parser, Debug)]
+#[command(name = "kvs-client", version)]
 struct Opt {
-    #[structopt(subcommand)]
+    #[command(subcommand)]
     command: Command,
 }
 
-#[derive(StructOpt, Debug)]
+#[derive(Subcommand, Debug)]
 enum Command {
-    #[structopt(name = "get", about = "Get the string value of a given string key")]
     Get {
-        #[structopt(name = "KEY", help = "A string key")]
+        /// a string key
+        #[arg(name = "key")]
         key: String,
-        #[structopt(
+        /// server addr:ip
+        #[arg(
             long,
-            help = "Set the server address",
-            raw(value_name = "ADDRESS_FORMAT"),
-            raw(default_value = "DEFAULT_LISTENING_ADDRESS"),
-            parse(try_from_str)
+            name = "addr",
+            value_name = ADDRESS_FORMAT,
+            default_value = DEFAULT_LISTENING_ADDRESS
         )]
         addr: SocketAddr,
     },
-    #[structopt(name = "set", about = "set the value of a string key to a string")]
     Set {
-        #[structopt(name = "KEY", help = "A string key")]
+        /// a string key
         key: String,
-        #[structopt(name = "VALUE", help = "The string value of the key")]
+        /// value of this key
+        #[arg(name = "value")]
         value: String,
-        #[structopt(
+        /// server addr:ip
+        #[arg(
             long,
-            help = "Set the server address)",
-            raw(value_name = "ADDRESS_FORMAT"),
-            raw(default_value = "DEFAULT_LISTENING_ADDRESS"),
-            parse(try_from_str)
+            name = "addr",
+            value_name = ADDRESS_FORMAT,
+            default_value = DEFAULT_LISTENING_ADDRESS
         )]
         addr: SocketAddr,
     },
-    #[structopt(name = "rm", about = "remove the value of a string key")]
+    #[command(name = "rm")]
     Remove {
-        #[structopt(name = "KEY", help = "a string key")]
+        /// a string key
         key: String,
-        #[structopt(
+        /// server addr:ip
+        #[arg(
             long,
-            help = "Set the server address)",
-            raw(value_name = "ADDRESS_FORMAT"),
-            raw(default_value = "DEFAULT_LISTENING_ADDRESS"),
-            parse(try_from_str)
+            name = "addr",
+            value_name = ADDRESS_FORMAT,
+            default_value = DEFAULT_LISTENING_ADDRESS
         )]
         addr: SocketAddr,
     },
 }
+
 fn main() {
-    let opt = Opt::from_args();
+    let opt = Opt::parse();
     if let Err(e) = run(opt) {
         eprintln!("{}", e);
         exit(1);

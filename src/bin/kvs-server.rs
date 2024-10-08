@@ -1,47 +1,65 @@
-use clap::arg_enum;
+use clap::{Parser, ValueEnum};
 use kvs::*;
 use log::{error, info, warn, LevelFilter};
 use std::env::current_dir;
+use std::fmt;
 use std::fs;
 use std::net::SocketAddr;
 use std::process::exit;
-use structopt::StructOpt;
+use std::str::FromStr;
 
 const DEFAULT_LISTENING_ADDRESS: &str = "127.0.0.1";
 const DEFAULT_ENGINE: Engine = Engine::kvs;
 
-arg_enum! {
-    #[allow(non_camel_case_types)]
-    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-    enum Engine {
-        kvs,
-        sled,
+#[allow(non_camel_case_types)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+enum Engine {
+    kvs,
+    sled,
+}
+
+impl fmt::Display for Engine {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s = match self {
+            Engine::kvs => "kvs",
+            Engine::sled => "sled",
+        };
+        write!(f, "{}", s)
+    }
+}
+impl FromStr for Engine {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "kvs" => Ok(Engine::kvs),
+            "sled" => Ok(Engine::sled),
+            _ => Err(format!("'{}' is not a valid engine", s)),
+        }
     }
 }
 
-#[derive(StructOpt, Debug)]
-#[structopt(name = "kvs-server")]
+#[derive(Parser, Debug)]
+#[command(name = "kvs-server", version)]
 struct Opt {
-    #[structopt(
+    // 这里的 doc 就是 help 的内容， /// 是 doc, // 是注释
+    /// Sets the listening address
+    #[arg(
         long,
-        help = "Sets the listening address",
         value_name = "IP:PORT",
-        raw(default_value = "DEFAULT_LISTENING_ADDRESS"),
-        parse(try_from_str)
+        default_value = DEFAULT_LISTENING_ADDRESS,
     )]
     addr: SocketAddr,
-    #[structopt(
-        long,
-        help = "Sets the storage engine",
-        value_name = "ENGINE-NAME",
-        raw(possible_values = "&Engine::variants()")
-    )]
+
+    /// Sets the storage engine
+    #[arg(long, value_name = "ENGINE-NAME")]
     engine: Option<Engine>,
 }
 
 fn main() {
     env_logger::builder().filter_level(LevelFilter::Info).init();
-    let mut opt = Opt::from_args();
+
+    // let mut opt = Opt::from_args();
+    let mut opt = Opt::parse();
     let res = current_engine().and_then(move |cur_engine| {
         if opt.engine.is_none() {
             opt.engine = cur_engine;

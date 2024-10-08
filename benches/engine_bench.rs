@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use kvs::{KvStore, KvsEngine, SledKvsEngine};
-use rand::prelude::*;
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 use sled;
 use tempfile::TempDir;
 
@@ -48,10 +48,10 @@ fn get_bench(c: &mut Criterion) {
                     .set(format!("key{}", key_i), "value".to_string())
                     .unwrap();
             }
-            let mut rng = SmallRng::from_seed([0; 16]);
+            let mut rng = SmallRng::from_seed([0; 32]);
             bencher.iter(|| {
                 store
-                    .get(format!("key{}", rng.gen_range(1, 1 << i)))
+                    .get(format!("key{}", rng.gen_range(1..1 << i)))
                     .unwrap();
             })
         });
@@ -64,9 +64,9 @@ fn get_bench(c: &mut Criterion) {
                 db.set(format!("key{}", key_i), "value".to_string())
                     .unwrap();
             }
-            let mut rng = SmallRng::from_seed([0; 16]);
+            let mut rng = SmallRng::from_seed([0; 32]);
             bencher.iter(|| {
-                db.get(format!("key{}", rng.gen_range(1, 1 << i))).unwrap();
+                db.get(format!("key{}", rng.gen_range(1..1 << i))).unwrap();
             })
         });
     }
