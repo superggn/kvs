@@ -6,14 +6,18 @@ use tempfile::TempDir;
 
 fn set_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("set_bench");
+    // group.measurement_time(std::time::Duration::from_secs(10));
+    group.sample_size(10);
     group.bench_function("kvs", |bencher| {
         bencher.iter_batched(
             || {
+                println!("kvs set setup");
                 let temp_dir = TempDir::new().unwrap();
                 (KvStore::open(temp_dir.path()).unwrap(), temp_dir)
             },
-            |(mut store, _temp_dir)| {
-                for i in 1..(1 << 12) {
+            |(store, _temp_dir)| {
+                println!("kvs set");
+                for i in 1..(1 << 8) {
                     store.set(format!("key{}", i), "value".to_string()).unwrap();
                 }
             },
@@ -23,11 +27,13 @@ fn set_bench(c: &mut Criterion) {
     group.bench_function("sled", |bencher| {
         bencher.iter_batched(
             || {
+                println!("sled set setup");
                 let temp_dir = TempDir::new().unwrap();
                 (SledKvsEngine::new(sled::open(&temp_dir).unwrap()), temp_dir)
             },
-            |(mut db, _temp_dir)| {
-                for i in 1..(1 << 12) {
+            |(db, _temp_dir)| {
+                println!("sled set");
+                for i in 1..(1 << 8) {
                     db.set(format!("key{}", i), "value".to_string()).unwrap();
                 }
             },
@@ -39,10 +45,13 @@ fn set_bench(c: &mut Criterion) {
 
 fn get_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("get_bench");
-    for i in &vec![8, 12, 16, 20] {
+    // group.measurement_time(std::time::Duration::from_secs(10));
+    group.sample_size(10);
+    // for i in &vec![8, 12, 16, 20]
+    for i in &vec![8, 12] {
         group.bench_with_input(format!("kvs_{}", i), i, |bencher, i| {
             let temp_dir = TempDir::new().unwrap();
-            let mut store = KvStore::open(temp_dir.path()).unwrap();
+            let store = KvStore::open(temp_dir.path()).unwrap();
             for key_i in 1..(1 << i) {
                 store
                     .set(format!("key{}", key_i), "value".to_string())
@@ -56,10 +65,11 @@ fn get_bench(c: &mut Criterion) {
             })
         });
     }
-    for i in &vec![8, 12, 16, 20] {
+    // for i in &vec![8, 12, 16, 20]
+    for i in &vec![8, 12] {
         group.bench_with_input(format!("sled_{}", i), i, |bencher, i| {
             let temp_dir = TempDir::new().unwrap();
-            let mut db = SledKvsEngine::new(sled::open(&temp_dir).unwrap());
+            let db = SledKvsEngine::new(sled::open(&temp_dir).unwrap());
             for key_i in 1..(1 << i) {
                 db.set(format!("key{}", key_i), "value".to_string())
                     .unwrap();
@@ -73,5 +83,8 @@ fn get_bench(c: &mut Criterion) {
     group.finish();
 }
 
+// 这里的 benches 是函数名
+// 不强制要求一定是 "benches"， 可以自己随便写
+// 只要 criterion_group 这里定义的名字和下面 criterion_main 里面用的名字一致即可
 criterion_group!(benches, set_bench, get_bench);
 criterion_main!(benches);

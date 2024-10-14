@@ -1,3 +1,5 @@
+use crate::thread_pool::{SharedQueueThreadPool, ThreadPool};
+
 use clap::{Parser, ValueEnum};
 use kvs::*;
 use log::{error, info, warn, LevelFilter};
@@ -82,15 +84,20 @@ fn run(opt: Opt) -> Result<()> {
     info!("Storage engine: {}", engine);
     info!("Listening on {}", opt.addr);
     fs::write(current_dir()?.join("engine"), format!("{}", engine))?;
+    let pool = SharedQueueThreadPool::new(3)?;
 
     match engine {
-        Engine::kvs => run_with_engine(KvStore::open(current_dir()?)?, opt.addr),
-        Engine::sled => run_with_engine(SledKvsEngine::new(sled::open(current_dir()?)?), opt.addr),
+        Engine::kvs => run_with(KvStore::open(current_dir()?)?, pool, opt.addr),
+        Engine::sled => run_with(
+            SledKvsEngine::new(sled::open(current_dir()?)?),
+            pool,
+            opt.addr,
+        ),
     }
 }
 
-fn run_with_engine<E: KvsEngine>(engine: E, addr: SocketAddr) -> Result<()> {
-    let server = KvsServer::new(engine);
+pub fn run_with<E: KvsEngine, P: ThreadPool>(engine: E, pool: P, addr: SocketAddr) -> Result<()> {
+    let server = KvsServer::new(engine, pool);
     server.run(addr)
 }
 

@@ -3,14 +3,14 @@
 use crate::Result;
 
 /// Trait for a kv store engine
-pub trait KvsEngine {
+pub trait KvsEngine: Clone + Send + 'static {
     /// set a key-value pair
     /// can overwrite existing value
-    fn set(&mut self, key: String, value: String) -> Result<()>;
+    fn set(&self, key: String, value: String) -> Result<()>;
     /// return Ok(Some(value)) / Ok(None)
-    fn get(&mut self, key: String) -> Result<Option<String>>;
+    fn get(&self, key: String) -> Result<Option<String>>;
     /// if key not found, return KvsError::KeyNotFound
-    fn remove(&mut self, key: String) -> Result<()>;
+    fn remove(&self, key: String) -> Result<()>;
 }
 
 mod kvs;
