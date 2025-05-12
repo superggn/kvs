@@ -1,8 +1,12 @@
 use super::ThreadPool;
 use crate::{KvsError, Result};
 
-/// wrapper of rayon::Threadpool
-pub struct RayonThreadPool(rayon::ThreadPool);
+use std::sync::Arc;
+
+/// wrapper of rayon::ThreadPool
+#[derive(Clone)]
+
+pub struct RayonThreadPool(Arc<rayon::ThreadPool>);
 
 impl ThreadPool for RayonThreadPool {
     fn new(threads: u32) -> Result<Self> {
@@ -10,7 +14,7 @@ impl ThreadPool for RayonThreadPool {
             .num_threads(threads as usize)
             .build()
             .map_err(|e| KvsError::StringError(format!("{}", e)))?;
-        Ok(RayonThreadPool(pool))
+        Ok(RayonThreadPool(Arc::new(pool)))
     }
     fn spawn<F>(&self, job: F)
     where

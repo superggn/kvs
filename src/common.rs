@@ -7,20 +7,36 @@ pub enum Request {
     Remove { key: String },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub enum GetResponse {
-    Ok(Option<String>),
-    Err(String),
-}
+// #[derive(Debug, Serialize, Deserialize)]
+// pub enum GetResponse {
+//     Ok(Option<String>),
+//     Err(String),
+// }
+
+// #[derive(Debug, Serialize, Deserialize)]
+// pub enum SetResponse {
+//     Ok(()),
+//     Err(String),
+// }
+
+// #[derive(Debug, Serialize, Deserialize)]
+// pub enum RemoveResponse {
+//     Ok(()),
+//     Err(String),
+// }
+
+// #[derive(Debug, Serialize, Deserialize)]
+// pub enum Response {
+//     Get(Option<String>),
+//     Set,
+//     Remove,
+//     Err(String),
+// }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum SetResponse {
-    Ok(()),
-    Err(String),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum RemoveResponse {
-    Ok(()),
+pub enum Response {
+    Get(Option<String>),
+    Set,
+    Remove,
     Err(String),
 }

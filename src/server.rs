@@ -1,11 +1,12 @@
-use crate::common::{GetResponse, RemoveResponse, Request, SetResponse};
+use crate::common::{Request, Response};
 use crate::thread_pool::ThreadPool;
 use crate::{KvsEngine, Result};
 
+use futures::sink::SinkExt;
+use futures::stream::StreamExt;
 use log::{debug, error};
-use serde_json::Deserializer;
-use std::io::{BufReader, BufWriter, Write};
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
+use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
 /// kv store server
 pub struct KvsServer<E: KvsEngine, P: ThreadPool> {
@@ -21,68 +22,73 @@ impl<E: KvsEngine, P: ThreadPool> KvsServer<E, P> {
     }
     /// run server on given SocketAddr
     pub fn run<A: ToSocketAddrs>(self, addr: A) -> Result<()> {
-        let listener = TcpListener::bind(addr)?;
-        for stream_res in listener.incoming() {
-            let engine = self.engine.clone();
-            self.pool.spawn(move || match stream_res {
-                Ok(stream) => {
-                    if let Err(e) = serve(engine, stream) {
-                        error!("Error on serving client: {}", e);
-                    }
-                }
-                Err(e) => error!("Connection failed: {}", e),
-            })
-        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        // async processed stream
+        rt.block_on(async {
+            let listener = TcpListener::bind(addr).await.unwrap();
+            loop {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let engine = self.engine.clone();
+                serve(engine, tcp)
+                    .await
+                    .map_err(|e| error!("Error on serving client: {}", e));
+            }
+            // let server = listener
+            //     .incoming()
+            //     .map_err(|e| error!("IO error: {}", e))
+            //     .for_each(move |tcp| {
+            //         let engine = self.engine.clone();
+            //         serve(engine, tcp).map_err(|e| error!("Error on serving client: {}", e))
+            //     });
+        });
         Ok(())
     }
 }
 
-fn serve<E: KvsEngine>(engine: E, tcp: TcpStream) -> Result<()> {
+async fn serve<E: KvsEngine>(engine: E, tcp: TcpStream) -> Result<()> {
     let peer_addr = tcp.peer_addr()?;
-    let reader = BufReader::new(&tcp);
-    let mut writer = BufWriter::new(&tcp);
-    let req_reader = Deserializer::from_reader(reader).into_iter::<Request>();
-
-    // 把拿到的 response 写到 tcp stream writer 里
-    macro_rules! send_resp {
-        ($resp:expr) => {{
-            let resp = $resp;
-            serde_json::to_writer(&mut writer, &resp)?;
-            writer.flush()?;
-            debug!("Response sent to {}: {:?}", peer_addr, resp);
-        }};
-    }
-
-    for req in req_reader {
-        let req = req?;
-        debug!("Receive request from {}: {:?}", peer_addr, req);
-        match req {
-            Request::Get { key } => {
-                send_resp!(match engine.get(key) {
-                    Ok(value) => {
-                        GetResponse::Ok(value)
+    let (read_half, write_half) = tcp.into_split();
+    // let inner = FramedRead::new(read_half, LengthDelimitedCodec::new());
+    let mut framed_read = FramedRead::new(read_half, LengthDelimitedCodec::new());
+    let mut framed_write = FramedWrite::new(write_half, LengthDelimitedCodec::new());
+    loop {
+        match framed_read.next().await {
+            Some(res) => match res {
+                Ok(req_bytes) => {
+                    let req_new = serde_json::from_slice(&req_bytes)?;
+                    debug!("Receive request from {}: {:?}", peer_addr, req_new);
+                    match req_new {
+                        Request::Get { key } => {
+                            let resp_str = engine.get(key).await?.unwrap();
+                            let resp = Response::Get(Some(resp_str));
+                            let resp_json = serde_json::to_string(&resp)?;
+                            framed_write.send(resp_json.into()).await?;
+                            debug!("Response sent to {}: {:?}", peer_addr, resp);
+                        }
+                        Request::Set { key, value } => {
+                            engine.set(key, value).await?;
+                            let resp = Response::Set;
+                            let resp_json = serde_json::to_string(&resp)?;
+                            framed_write.send(resp_json.into()).await?;
+                            debug!("Response sent to {}: {:?}", peer_addr, resp);
+                        }
+                        Request::Remove { key } => {
+                            engine.remove(key).await?;
+                            let resp = Response::Remove;
+                            let resp_json = serde_json::to_string(&resp)?;
+                            framed_write.send(resp_json.into()).await?;
+                            debug!("Response sent to {}: {:?}", peer_addr, resp);
+                        }
                     }
-                    Err(e) => {
-                        GetResponse::Err(format!("{}", e))
-                    }
-                })
-            }
-            Request::Set { key, value } => {
-                send_resp!(match engine.set(key, value) {
-                    Ok(_) => {
-                        SetResponse::Ok(())
-                    }
-                    Err(e) => SetResponse::Err(format!("{}", e)),
-                })
-            }
-            Request::Remove { key } => {
-                send_resp!(match engine.remove(key) {
-                    Ok(_) => RemoveResponse::Ok(()),
-                    Err(e) => RemoveResponse::Err(format!("{}", e)),
-                })
-            }
+                }
+                Err(e) => {
+                    error!("Error parsing request: {}", e);
+                    framed_write
+                        .send(serde_json::to_string(&Response::Err(format!("{}", e)))?.into())
+                        .await?;
+                }
+            },
+            None => println!("Parsed a None!!!!"),
         }
     }
-
-    Ok(())
 }

@@ -1,4 +1,4 @@
-use crate::common::{GetResponse, RemoveResponse, Request, SetResponse};
+use crate::common::{Request, Response};
 use crate::{KvsError, Result};
 
 use serde::Deserialize;
@@ -26,7 +26,8 @@ impl KvsClient {
     pub fn get(&mut self, key: String) -> Result<Option<String>> {
         serde_json::to_writer(&mut self.writer, &Request::Get { key })?;
         self.writer.flush()?;
-        let resp = GetResponse::deserialize(&mut self.reader)?;
+        let a = self.reader;
+        // let resp = Response::Get(&mut)?;
         match resp {
             GetResponse::Ok(value) => Ok(value),
             GetResponse::Err(msg) => Err(KvsError::StringError(msg)),

@@ -24,6 +24,7 @@ use crate::Result;
 use std::thread;
 
 /// the name is xxxPool, but it is not a "Pool"
+#[derive(Clone)]
 pub struct NaiveThreadPool;
 
 /// It is actually not a thread pool. It spawns a new thread every time

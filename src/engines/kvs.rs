@@ -1,3 +1,7 @@
+use super::KvsEngine;
+use crate::thread_pool::ThreadPool;
+use crate::{KvsError, Result};
+use crossbeam::queue::ArrayQueue;
 use crossbeam_skiplist::SkipMap;
 use log::error;
 use serde::{Deserialize, Serialize};
@@ -11,9 +15,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-
-use super::KvsEngine;
-use crate::{KvsError, Result};
+use tokio::sync::oneshot;
 
 const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 
@@ -37,12 +39,13 @@ const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 /// ```
 
 #[derive(Clone)]
-pub struct KvStore {
+pub struct KvStore<P: ThreadPool> {
     path: Arc<PathBuf>,
     // key_2_set_command_position, does not store "remove" command position
     key_2_cmd_pos: Arc<SkipMap<String, CommandPos>>,
-    reader: KvStoreReader,
     writer: Arc<Mutex<KvStoreWriter>>,
+    reader_pool: Arc<ArrayQueue<KvStoreReader>>,
+    thread_pool: P,
 }
 
 /// A single thread reader.
@@ -51,6 +54,7 @@ pub struct KvStore {
 /// `KvStoreReader`s open the same files separately. So the user
 /// can read concurrently through multiple `KvStore`s in different
 /// threads.
+#[derive(Debug)]
 struct KvStoreReader {
     path: Arc<PathBuf>,
     // last compaction gen
@@ -297,10 +301,10 @@ impl<W: Write + Seek> Write for BufWriterWithPos<W> {
     }
 }
 
-impl KvStore {
+impl<P: ThreadPool> KvStore<P> {
     /// init an instance by opening a new path
     /// This will create a new directory if the given one does not exist.
-    pub fn open(path: impl Into<PathBuf>) -> Result<KvStore> {
+    pub fn open(path: impl Into<PathBuf>, concurrency: u32) -> Result<Self> {
         // traverse dir path, load every file into memory
         let data = path.into();
         let path = Arc::new(data);
@@ -331,11 +335,17 @@ impl KvStore {
             path: Arc::clone(&path),
             key_2_cmd_pos: Arc::clone(&key_2_cmd_pos),
         };
+        let thread_pool = P::new(concurrency)?;
+        let reader_pool = Arc::new(ArrayQueue::new(concurrency as usize));
+        for _ in 1..concurrency {
+            reader_pool.push(reader.clone()).unwrap();
+        }
         Ok(KvStore {
             path,
-            reader,
             key_2_cmd_pos,
             writer: Arc::new(Mutex::new(writer)),
+            thread_pool,
+            reader_pool,
         })
     }
 }
@@ -343,28 +353,83 @@ impl KvStore {
 /// Gets the string value of a given string key.
 ///
 /// Returns `None` if the given key does not exist.
-impl KvsEngine for KvStore {
-    fn set(&self, key: String, value: String) -> Result<()> {
-        self.writer.lock().unwrap().set(key, value)
-    }
-    fn get(&self, key: String) -> Result<Option<String>> {
-        // 有 cmd_pos 就试试能不能取出来， 取不出来就是文件有问题
-        // 这里如果 remove 了还能不能取出来？
-        //   如果最新命令是 remove, 那么 key_2_cmd_pos 里不会有这个 key, 但文件里仍会存 remove 命令
-        if let Some(cmd_pos) = self.key_2_cmd_pos.get(&key) {
-            if let Command::Set { value, .. } = self.reader.read_command(*cmd_pos.value())? {
-                Ok(Some(value))
-            } else {
-                Err(KvsError::UnexpectedCommandType)
+impl<P> KvsEngine for KvStore<P>
+where
+    P: ThreadPool + Send,
+{
+    async fn set(&self, key: String, value: String) -> Result<()> {
+        let writer = self.writer.clone();
+        use tokio::sync::oneshot::{Receiver, Sender};
+        let (tx, rx): (Sender<Result<()>>, Receiver<Result<()>>) = oneshot::channel();
+        self.thread_pool.spawn(move || {
+            let res = writer.lock().unwrap().set(key, value);
+            if tx.send(res).is_err() {
+                error!("Receiving end already dropped!");
             }
-        // 没 cmd_pos 就是新值拿不到
-        } else {
-            Ok(None)
-        }
+        });
+        rx.await
+            .map_err(|e| KvsError::StringError(format!("{}", e)))?
+    }
+    async fn get(&self, key: String) -> Result<Option<String>> {
+        let reader_pool = self.reader_pool.clone();
+        let key_2_cmd_pos = self.key_2_cmd_pos.clone();
+        let (tx, rx) = oneshot::channel();
+        // 这里注释掉的是我自己写的另外一个版本, 我觉得他那个版本有点儿啰嗦
+        // self.thread_pool.spawn(move || {
+        //     let res = match key_2_cmd_pos.get(&key) {
+        //         Some(cmd_pos_entry) => {
+        //             let reader = reader_pool.pop().unwrap();
+        //             let res = match reader.read_command(*cmd_pos_entry.value()) {
+        //                 Ok(Command::Set { value, .. }) => Ok(Some(value)),
+        //                 _ => Err(KvsError::UnexpectedCommandType),
+        //             };
+        //             res
+        //         }
+        //         None => Ok(None),
+        //     };
+        //     if tx.send(res).is_err() {
+        //         error!("Receiving end is already dropped!");
+        //     };
+        // });
+        // let a = rx
+        //     .await
+        //     .map_err(|e| KvsError::StringError(format!("{e}",)))?;
+        self.thread_pool.spawn(move || {
+            let res = (|| {
+                if let Some(cmd_pos_entry) = key_2_cmd_pos.get(&key) {
+                    let reader = reader_pool.pop().unwrap();
+                    let res = if let Command::Set { value, .. } =
+                        reader.read_command(*cmd_pos_entry.value())?
+                    {
+                        Ok(Some(value))
+                    } else {
+                        Err(KvsError::UnexpectedCommandType)
+                    };
+                    reader_pool.push(reader).unwrap();
+                    res
+                } else {
+                    Ok(None)
+                }
+            })();
+            if tx.send(res).is_err() {
+                error!("Receiving end already dropped!");
+            };
+        });
+        rx.await
+            .map_err(|e| KvsError::StringError(format!("{}", e)))?
     }
 
-    fn remove(&self, key: String) -> Result<()> {
-        self.writer.lock().unwrap().remove(key)
+    async fn remove(&self, key: String) -> Result<()> {
+        let writer = self.writer.clone();
+        let (tx, rx) = oneshot::channel();
+        self.thread_pool.spawn(move || {
+            let res = writer.lock().unwrap().remove(key);
+            if tx.send(res).is_err() {
+                error!("Receiving end is already dropped!");
+            }
+        });
+        rx.await
+            .map_err(|e| KvsError::StringError(format!("{}", e)))?
     }
 }
 
